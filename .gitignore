@@ -3,6 +3,11 @@
 .env.local
 .env.*.local
 
+# SSH Keys & Credentials
+*.pem
+*.key
+*.pub
+
 # Logs
 logs/
 *.log
