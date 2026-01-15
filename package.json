@@ -1,0 +1,35 @@
+{
+  "name": "trading-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Professional cryptocurrency trading bot for Binance Futures with automated position sizing and risk management",
+  "main": "bin/app.js",
+  "bin": {
+    "trading-bot": "bin/app.js"
+  },
+  "scripts": {
+    "start": "node bin/app.js",
+    "dev": "nodemon bin/app.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "trading",
+    "crypto",
+    "binance",
+    "futures",
+    "bot",
+    "automated"
+  ],
+  "author": "",
+  "license": "ISC",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  },
+  "dependencies": {
+    "binance-api-node": "^0.13.6",
+    "dotenv": "^17.2.3"
+  }
+}

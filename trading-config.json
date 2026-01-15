@@ -1,0 +1,11 @@
+{
+  "symbol": "SOLUSDT",
+  "amount": 100,
+  "entry1": 144.9,
+  "entry2": 143.8,
+  "entry3": 143.7,
+  "takeProfit": 146,
+  "stopLoss": 143.35,
+  "leverage": 15,
+  "side": "LONG"
+}
