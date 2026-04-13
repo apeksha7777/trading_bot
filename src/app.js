@@ -98,6 +98,10 @@ async function runPositionSizing() {
     // Create trade engine
     const engine = createTradeEngine(inputs, results);
 
+    // Initialize limit orders before starting the price feed
+    log("Initializing limit orders...");
+    await engine.initializeOrders();
+
     // Start price feed
     log("Starting price feed...");
     priceInterval = startPriceFeed(inputs.symbol, engine.onPrice);

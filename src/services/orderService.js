@@ -4,18 +4,18 @@ import { log, error, debug } from "../utils/logger.js";
 // Global locks and state tracking
 let orderInFlight = false;
 let lastActionKey = null;
-const ORDER_COOLDOWN_MS = 500;
 
 /**
- * Place a market order on Binance Futures
+ * Place an order on Binance Futures using LIMIT when a price is provided.
  *
  * @param {string} action - "OPEN" to enter position, "CLOSE" to exit
  * @param {number} quantity - Order quantity
  * @param {string} symbol - Trading pair (e.g., "SOLUSDT")
  * @param {string} side - "LONG" or "SHORT"
+ * @param {?number} price - Optional limit price; if provided, a LIMIT order is placed
  * @returns {Promise<Object>} Order response from Binance
  */
-async function placeOrder(action, quantity, symbol = "BTCUSDT", side = "LONG") {
+async function placeOrder(action, quantity, symbol = "BTCUSDT", side = "LONG", price = null) {
   // Input validation
   if (!["OPEN", "CLOSE"].includes(action)) {
     throw new Error("Action must be 'OPEN' or 'CLOSE'");
@@ -33,6 +33,10 @@ async function placeOrder(action, quantity, symbol = "BTCUSDT", side = "LONG") {
     throw new Error("Side must be 'LONG' or 'SHORT'");
   }
 
+  if (price !== null && (typeof price !== "number" || price <= 0)) {
+    throw new Error("Price must be a positive number for limit orders");
+  }
+
   // Prevent duplicate orders
   if (orderInFlight) {
     log("⛔ Order blocked: order already in flight");
@@ -40,7 +44,7 @@ async function placeOrder(action, quantity, symbol = "BTCUSDT", side = "LONG") {
   }
 
   // Action deduplication
-  const actionKey = `${action}_${side}_${quantity}_${symbol}`;
+  const actionKey = `${action}_${side}_${quantity}_${symbol}_${price}`;
   if (actionKey === lastActionKey) {
     log("⛔ Duplicate order blocked:", actionKey);
     return null;
@@ -58,19 +62,26 @@ async function placeOrder(action, quantity, symbol = "BTCUSDT", side = "LONG") {
       orderSide = side === "LONG" ? "BUY" : "SELL";
     }
 
+    const orderType = price !== null ? "LIMIT" : "MARKET";
+    const orderParams = {
+      symbol,
+      side: orderSide,
+      type: orderType,
+      quantity,
+      reduceOnly: action === "CLOSE",
+    };
+
+    if (price !== null) {
+      orderParams.price = price.toString();
+      orderParams.timeInForce = "GTC";
+    }
+
     log(
-      `📤 Placing order: ${action} | ${symbol} | ${orderSide} ${quantity}`
+      `📤 Placing order: ${action} | ${symbol} | ${orderSide} ${quantity} | ${orderType}${price !== null ? ` @ ${price}` : ""}`
     );
     debug(`Order timestamp: ${new Date().toISOString()}`);
 
-    // Place market order
-    const order = await client.futuresOrder({
-      symbol,
-      side: orderSide,
-      type: "MARKET",
-      quantity,
-      reduceOnly: action === "CLOSE",
-    });
+    const order = await client.futuresOrder(orderParams);
 
     if (!order || !order.orderId) {
       throw new Error("No order ID received from Binance");
@@ -86,11 +97,37 @@ async function placeOrder(action, quantity, symbol = "BTCUSDT", side = "LONG") {
     error(`❌ Order failed: ${errorMsg}`);
     throw err;
   } finally {
-    // Release lock after cooldown
-    setTimeout(() => {
-      orderInFlight = false;
-    }, ORDER_COOLDOWN_MS);
+    orderInFlight = false;
   }
 }
 
+/**
+ * Cancel an existing Binance Futures order by orderId.
+ *
+ * @param {string} symbol - Trading pair (e.g., "BTCUSDT")
+ * @param {number|string} orderId - Binance order ID
+ * @returns {Promise<Object>} Cancel response from Binance
+ */
+async function cancelOrder(symbol, orderId) {
+  if (!symbol || typeof symbol !== "string") {
+    throw new Error("Symbol is required");
+  }
+
+  if (!orderId) {
+    throw new Error("Order ID is required to cancel an order");
+  }
+
+  try {
+    log(`🗑️ Cancelling order ${orderId} for ${symbol}`);
+    const result = await client.futuresCancelOrder({ symbol, orderId });
+    log(`✅ Cancelled order ${orderId} for ${symbol}`);
+    return result;
+  } catch (err) {
+    const errorMsg = err?.response?.body?.msg || err?.message || String(err);
+    error(`❌ Cancel failed: ${errorMsg}`);
+    throw err;
+  }
+}
+
+export { cancelOrder };
 export default placeOrder;
