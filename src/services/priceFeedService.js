@@ -33,7 +33,7 @@ function startPriceFeed(symbol, onPrice) {
       }
 
       // Log price every interval
-      console.log(`[${new Date().toISOString()}] ${symbol} LTP: ${currentPrice}`);
+      log(`${symbol} LTP: ${currentPrice}`);
 
       if (currentPrice !== lastPrice) {
         lastPrice = currentPrice;

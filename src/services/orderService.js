@@ -129,5 +129,75 @@ async function cancelOrder(symbol, orderId) {
   }
 }
 
-export { cancelOrder };
+/**
+ * Get the status of a Binance Futures order.
+ *
+ * @param {string} symbol - Trading pair (e.g., "BTCUSDT")
+ * @param {number|string} orderId - Binance order ID
+ * @param {string} orderSide - Order side ("BUY" or "SELL")
+ * @param {number} quantity - Order quantity
+ * @param {number} price - Order price (required for LIMIT orders)
+ * @returns {Promise<Object>} Order status from Binance
+ */
+async function getOrderStatus(symbol, orderId, orderSide, quantity, price) {
+  if (!symbol || typeof symbol !== "string") {
+    throw new Error("Symbol is required");
+  }
+
+  if (!orderId) {
+    throw new Error("Order ID is required to get order status");
+  }
+
+  if (!orderSide || !["BUY", "SELL"].includes(orderSide)) {
+    throw new Error("Order side must be BUY or SELL");
+  }
+
+  if (typeof quantity !== "number" || quantity <= 0) {
+    throw new Error("Quantity must be a positive number");
+  }
+
+  if (price !== null && (typeof price !== "number" || price <= 0)) {
+    throw new Error("Price must be a positive number for limit orders");
+  }
+
+  try {
+    const params = { 
+      symbol, 
+      side: orderSide, 
+      orderId,
+      quantity
+    };
+    if (price !== null) {
+      params.price = price.toString();
+    }
+    const order = await client.futuresOrder(params);
+    return order;
+  } catch (err) {
+    const errorMsg = err?.response?.body?.msg || err?.message || String(err);
+    error(`❌ Get order status failed: ${errorMsg}`);
+    throw err;
+  }
+}
+
+/**
+ * Check if an order is completely filled.
+ *
+ * @param {string} symbol - Trading pair
+ * @param {number|string} orderId - Binance order ID
+ * @param {string} orderSide - Order side ("BUY" or "SELL")
+ * @param {number} quantity - Order quantity
+ * @param {number} price - Order price (required for LIMIT orders)
+ * @returns {Promise<boolean>} True if order is filled, false otherwise
+ */
+async function isOrderFilled(symbol, orderId, orderSide, quantity, price) {
+  try {
+    const order = await getOrderStatus(symbol, orderId, orderSide, quantity, price);
+    return order.status === "FILLED";
+  } catch (err) {
+    error(`Failed to check if order ${orderId} is filled:`, err.message);
+    return false;
+  }
+}
+
+export { cancelOrder, getOrderStatus, isOrderFilled };
 export default placeOrder;

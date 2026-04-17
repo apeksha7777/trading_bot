@@ -1,4 +1,4 @@
-import placeBinanceOrder, { cancelOrder } from "../services/orderService.js";
+import placeBinanceOrder, { cancelOrder, isOrderFilled } from "../services/orderService.js";
 import { log, error, debug } from "../utils/logger.js";
 
 /**
@@ -29,6 +29,22 @@ function createTradeEngine(inputs, quantities) {
       takeProfit: null,
       stopLoss: null,
     },
+    pendingFills: {
+      entry1: false,
+      entry2: false,
+      entry3: false,
+    },
+    triggered: {
+      entry1: false,
+      entry2: false,
+      entry3: false,
+    },
+    orderPlacementAttempted: {
+      entry2: false,
+      entry3: false,
+      stopLoss: false,
+      takeProfit: false,
+    },
   };
 
   /**
@@ -51,7 +67,7 @@ function createTradeEngine(inputs, quantities) {
     try {
       const order = await placeBinanceOrder(action, qty, symbol, side, price);
       if (tag && order?.orderId) {
-        state.activeOrders[tag] = order.orderId;
+        state.activeOrders[tag] = { orderId: order.orderId, price: price };
       }
       return order;
     } catch (err) {
@@ -61,11 +77,11 @@ function createTradeEngine(inputs, quantities) {
   }
 
   async function cancelOrderByTag(tag) {
-    const orderId = state.activeOrders[tag];
-    if (!orderId) return null;
+    const orderInfo = state.activeOrders[tag];
+    if (!orderInfo || !orderInfo.orderId) return null;
 
     try {
-      return await cancelOrder(symbol, orderId);
+      return await cancelOrder(symbol, orderInfo.orderId);
     } catch (err) {
       error(`Failed to cancel ${tag} order:`, err.message);
       return null;
@@ -87,9 +103,95 @@ function createTradeEngine(inputs, quantities) {
     await cancelOrders(tags);
   }
 
-  async function cancelAllOrders() {
-    await cancelEntryOrders();
-    await cancelProtectiveOrders();
+  async function checkPendingFills() {
+    try {
+      // Determine order side (BUY for LONG, SELL for SHORT)
+      const orderSide = side === "LONG" ? "BUY" : "SELL";
+
+      // Check Entry 1 fill
+      if (state.pendingFills.entry1 && state.activeOrders.entry1) {
+        const orderInfo = state.activeOrders.entry1;
+        if (await isOrderFilled(symbol, orderInfo.orderId, orderSide, qty1, orderInfo.price)) {
+          log(`Entry 1 order filled - Qty: ${qty1}`);
+          state.level = 1;
+          state.positionQty = qty1;
+          state.activeOrders.entry1 = null;
+          state.pendingFills.entry1 = false;
+
+          // Now place Entry 2, SL, and TP (only if not already attempted)
+          if (!state.orderPlacementAttempted.entry2) {
+            state.orderPlacementAttempted.entry2 = true;
+            await placeOrderWrapper("OPEN", qty2, entry2, "entry2");
+          }
+          if (!state.orderPlacementAttempted.stopLoss) {
+            state.orderPlacementAttempted.stopLoss = true;
+            await placeOrderWrapper("CLOSE", state.positionQty, stopLoss, "stopLoss");
+          }
+          if (!state.orderPlacementAttempted.takeProfit) {
+            state.orderPlacementAttempted.takeProfit = true;
+            await placeOrderWrapper("CLOSE", state.positionQty, takeProfit, "takeProfit");
+          }
+        }
+      }
+
+      // Check Entry 2 fill
+      if (state.pendingFills.entry2 && state.activeOrders.entry2) {
+        const orderInfo = state.activeOrders.entry2;
+        if (await isOrderFilled(symbol, orderInfo.orderId, orderSide, qty2, orderInfo.price)) {
+          log(`Entry 2 order filled - Qty: ${qty2}`);
+          state.level = 2;
+          state.positionQty += qty2;
+          state.activeOrders.entry2 = null;
+          state.pendingFills.entry2 = false;
+
+          // Now place Entry 3, and update SL/TP (only if not already attempted)
+          if (!state.orderPlacementAttempted.entry3) {
+            state.orderPlacementAttempted.entry3 = true;
+            await placeOrderWrapper("OPEN", qty3, entry3, "entry3");
+          }
+          // Reset SL/TP attempted flags for new orders
+          state.orderPlacementAttempted.stopLoss = false;
+          state.orderPlacementAttempted.takeProfit = false;
+          await cancelProtectiveOrders();
+          if (!state.orderPlacementAttempted.stopLoss) {
+            state.orderPlacementAttempted.stopLoss = true;
+            await placeOrderWrapper("CLOSE", state.positionQty, stopLoss, "stopLoss");
+          }
+          if (!state.orderPlacementAttempted.takeProfit) {
+            state.orderPlacementAttempted.takeProfit = true;
+            await placeOrderWrapper("CLOSE", state.positionQty, entry1, "takeProfit");
+          }
+        }
+      }
+
+      // Check Entry 3 fill
+      if (state.pendingFills.entry3 && state.activeOrders.entry3) {
+        const orderInfo = state.activeOrders.entry3;
+        if (await isOrderFilled(symbol, orderInfo.orderId, orderSide, qty3, orderInfo.price)) {
+          log(`Entry 3 order filled - Qty: ${qty3}`);
+          state.level = 3;
+          state.positionQty += qty3;
+          state.activeOrders.entry3 = null;
+          state.pendingFills.entry3 = false;
+
+          // Update SL/TP (only if not already attempted)
+          // Reset SL/TP attempted flags for final orders
+          state.orderPlacementAttempted.stopLoss = false;
+          state.orderPlacementAttempted.takeProfit = false;
+          await cancelProtectiveOrders();
+          if (!state.orderPlacementAttempted.stopLoss) {
+            state.orderPlacementAttempted.stopLoss = true;
+            await placeOrderWrapper("CLOSE", state.positionQty, stopLoss, "stopLoss");
+          }
+          if (!state.orderPlacementAttempted.takeProfit) {
+            state.orderPlacementAttempted.takeProfit = true;
+            await placeOrderWrapper("CLOSE", state.positionQty, entry2, "takeProfit");
+          }
+        }
+      }
+    } catch (err) {
+      error("Error checking pending fills:", err.message);
+    }
   }
 
   async function initializeOrders() {
@@ -106,6 +208,9 @@ function createTradeEngine(inputs, quantities) {
       debug(
         `[${symbol}] LTP: ${price}, Level: ${state.level}, Position Qty: ${state.positionQty}`
       );
+
+      // Check for pending order fills and place subsequent orders
+      await checkPendingFills();
 
       // ---------- STOP LOSS ----------
       if (
@@ -137,14 +242,12 @@ function createTradeEngine(inputs, quantities) {
           (side === "LONG" && price <= entry1) ||
           (side === "SHORT" && price >= entry1)
         ) {
-          log(`ENTRY 1 triggered at ${price} - Qty: ${qty1}`);
-          state.level = 1;
-          state.positionQty = qty1;
-          state.activeOrders.entry1 = null;
-
-          await placeOrderWrapper("OPEN", qty2, entry2, "entry2");
-          await placeOrderWrapper("CLOSE", state.positionQty, stopLoss, "stopLoss");
-          await placeOrderWrapper("CLOSE", state.positionQty, takeProfit, "takeProfit");
+          if (!state.triggered.entry1) {
+            log(`ENTRY 1 triggered at ${price} - Qty: ${qty1}`);
+            state.triggered.entry1 = true;
+            // The order was already placed in initializeOrders, now mark as pending fill
+            state.pendingFills.entry1 = true;
+          }
         }
         return;
       }
@@ -155,15 +258,12 @@ function createTradeEngine(inputs, quantities) {
           (side === "LONG" && price <= entry2) ||
           (side === "SHORT" && price >= entry2)
         ) {
-          log(`ENTRY 2 triggered at ${price} - Qty: ${qty2}`);
-          state.level = 2;
-          state.positionQty += qty2;
-          state.activeOrders.entry2 = null;
-
-          await placeOrderWrapper("OPEN", qty3, entry3, "entry3");
-          await cancelProtectiveOrders();
-          await placeOrderWrapper("CLOSE", state.positionQty, stopLoss, "stopLoss");
-          await placeOrderWrapper("CLOSE", state.positionQty, entry1, "takeProfit");
+          if (!state.triggered.entry2) {
+            log(`ENTRY 2 triggered at ${price} - Qty: ${qty2}`);
+            state.triggered.entry2 = true;
+            // The order was already placed when entry1 filled, now mark as pending fill
+            state.pendingFills.entry2 = true;
+          }
         }
         return;
       }
@@ -174,14 +274,12 @@ function createTradeEngine(inputs, quantities) {
           (side === "LONG" && price <= entry3) ||
           (side === "SHORT" && price >= entry3)
         ) {
-          log(`ENTRY 3 triggered at ${price} - Qty: ${qty3}`);
-          state.level = 3;
-          state.positionQty += qty3;
-          state.activeOrders.entry3 = null;
-
-          await cancelProtectiveOrders();
-          await placeOrderWrapper("CLOSE", state.positionQty, stopLoss, "stopLoss");
-          await placeOrderWrapper("CLOSE", state.positionQty, entry2, "takeProfit");
+          if (!state.triggered.entry3) {
+            log(`ENTRY 3 triggered at ${price} - Qty: ${qty3}`);
+            state.triggered.entry3 = true;
+            // The order was already placed when entry2 filled, now mark as pending fill
+            state.pendingFills.entry3 = true;
+          }
         }
       }
     } catch (err) {
