@@ -1,171 +1,198 @@
 /**
- * Trading Bot Application
- * Manages initialization, execution, and graceful shutdown
+ * Main Trading Bot Entry Point
+ * Loads config, validates, calculates quantities, logs them
  */
 
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-import createTradeEngine from "./core/tradeEngine.js";
-import { calculateTCLQuantities, getStepSizeAndMinQty } from "./utils/qtyCalculator.js";
-import placeOrder from "./services/orderService.js";
-import { log, error, warn } from "./utils/logger.js";
-import client from "./services/binanceClient.js";
-import startPriceFeed from "./services/priceFeedService.js";
-import { validateInputs } from "./validators/inputValidator.js";
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { log, error, debug } from './utils/logger.js';
+import { calculateTCLQuantities, getStepSizeAndMinQty } from './utils/qtyCalculator.js';
+import { validateInputs } from './validators/inputValidator.js';
+import createTradeEngine from './core/tradeEngine.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const configPath = path.join(__dirname, "../trading-config.json");
+const configPath = path.join(__dirname, '../trading-config.json');
 
-let priceInterval = null;
-let isRunning = false;
+let engine = null;
+let config = null;
 
 /**
- * Load trading configuration from JSON file
+ * Load and parse trading configuration from JSON file
  */
 function loadConfig() {
   try {
-    const configData = fs.readFileSync(configPath, "utf-8");
+    log('Loading trading configuration...');
+    const configData = fs.readFileSync(configPath, 'utf-8');
     const config = JSON.parse(configData);
+    log(`✅ Config loaded from ${configPath}`);
     return config;
   } catch (err) {
-    error("Failed to load trading-config.json:", err.message);
+    error('Failed to load trading-config.json:', err.message);
     process.exit(1);
   }
 }
 
 /**
- * Main trading function
+ * Callback when Entry 1 order is fully filled
  */
-async function runPositionSizing() {
+async function onEntry1Filled(orderUpdate) {
+  log('\n╔═══════════════════════════════════════╗');
+  log('║  🎉 ENTRY 1 FILLED - READY TO SCALE   ║');
+  log('╚═══════════════════════════════════════╝\n');
+  log(`Entry Price: ${orderUpdate.price}`);
+  log(`Filled Quantity: ${orderUpdate.executedQty}`);
+  log(`Time: ${new Date(orderUpdate.eventTime).toISOString()}\n`);
+
   try {
-    if (isRunning) {
-      warn("Trading bot is already running");
-      return;
+    // 1. Place Entry 2 limit order
+    await engine.placeEntry2();
+
+    // 2. Place Take Profit for the quantity filled in Entry 1
+    await engine.placeTakeProfit(orderUpdate.executedQty);
+  } catch (err) {
+    error('Failed to execute follow-up strategy:', err.message);
+  }
+}
+
+/**
+ * Callback when Entry 2 order is fully filled
+ */
+async function onEntry2Filled(orderUpdate) {
+  log('\n╔═══════════════════════════════════════╗');
+  log('║  🚀 ENTRY 2 FILLED - SCALING UP       ║');
+  log('╚═══════════════════════════════════════╝\n');
+  log(`Fill Price: ${orderUpdate.price}`);
+  log(`Filled Quantity: ${orderUpdate.executedQty}`);
+
+  try {
+    // 1. Place Entry 3 limit order
+    await engine.placeEntry3();
+
+    // 2. Update Take Profit: Cancel old TP and place new one for total qty
+    const state = engine.getState();
+    if (state.takeProfitOrderId) {
+      await engine.cancelOrder(state.takeProfitOrderId, 'Old TP');
     }
+    
+    // Change take profit to entry 1 with qty as position qty
+    const totalQty = engine.qty1 + engine.qty2;
+    await engine.placeTakeProfit(totalQty, config.entry1);
+  } catch (err) {
+    error('Failed to execute Entry 2 follow-up:', err.message);
+  }
+}
 
-    isRunning = true;
-    log("Trading bot starting...");
+/**
+ * Callback when Entry 3 order is fully filled
+ */
+async function onEntry3Filled(orderUpdate) {
+  log('\n╔═══════════════════════════════════════╗');
+  log('║  🔥 ENTRY 3 FILLED - MAX POSITION     ║');
+  log('╚═══════════════════════════════════════╝\n');
+  log(`Fill Price: ${orderUpdate.price}`);
+  log(`Filled Quantity: ${orderUpdate.executedQty}`);
 
-    // Load configuration from file
-    const inputs = loadConfig();
+  try {
+    // 1. Update Take Profit: Cancel old TP and place new one at Entry 2 for total qty
+    const state = engine.getState();
+    if (state.takeProfitOrderId) {
+      await engine.cancelOrder(state.takeProfitOrderId, 'Old TP');
+    }
+    
+    const totalQty = engine.qty1 + engine.qty2 + engine.qty3;
+    await engine.placeTakeProfit(totalQty, config.entry2);
+
+    // 2. Place stop loss at stop loss price for pos qty
+    await engine.placeStopLoss(totalQty);
+  } catch (err) {
+    error('Failed to execute Entry 3 follow-up:', err.message);
+  }
+}
+
+/**
+ * Main execution
+ */
+async function main() {
+  try {
+    log('═════════════════════════════════════════');
+    log('    Trading Bot - Configuration Setup');
+    log('═════════════════════════════════════════');
+
+    // Load configuration
+    config = loadConfig();
 
     // Validate inputs
-    validateInputs(inputs);
-    log("Input validation passed");
+    validateInputs(config);
 
-    // Set leverage
-    log(`Setting leverage to ${inputs.leverage}x for ${inputs.symbol}`);
-    await client.futuresLeverage({
-      symbol: inputs.symbol,
-      leverage: inputs.leverage,
-    });
+    // Display configuration
+    log('\n--- Configuration Loaded ---');
+    log(`Symbol: ${config.symbol}`);
+    log(`Side: ${config.side}`);
+    log(`Amount: ${config.amount} USDT`);
+    log(`Leverage: ${config.leverage}x`);
+    log(`Entry 1: ${config.entry1}`);
+    log(`Entry 2: ${config.entry2}`);
+    log(`Entry 3: ${config.entry3}`);
+    log(`Take Profit: ${config.takeProfit}`);
+    log(`Stop Loss: ${config.stopLoss}`);
 
-    // Get symbol precision info
-    const { stepSize, minQty } = await getStepSizeAndMinQty(inputs.symbol);
-    log(`Symbol precision - stepSize: ${stepSize}, minQty: ${minQty}`);
+    // Get symbol precision from Binance
+    log('\nFetching symbol precision from Binance...');
+    const { stepSize, minQty, tickSize } = await getStepSizeAndMinQty(config.symbol);
+    console.log(stepSize, minQty, tickSize,'step min and tick');
+
+
+   
 
     // Calculate quantities
-    const results = calculateTCLQuantities(
-      inputs.amount,
-      inputs.entry1,
-      inputs.takeProfit,
-      inputs.stopLoss,
-      inputs.leverage,
-      inputs.entry2,
-      inputs.entry3,
+    log('\nCalculating order quantities...');
+    const quantities = calculateTCLQuantities(
+      config.amount,
+      config.entry1,
+      config.takeProfit,
+      config.stopLoss,
+      config.leverage,
+      config.entry2,
+      config.entry3,
       stepSize,
       minQty
     );
 
-    log("--- Trading Configuration ---");
-    log(`Symbol: ${inputs.symbol}`);
-    log(`Side: ${inputs.side}`);
-    log(`Account Size: ${inputs.amount}`);
-    log(`Entry 1: ${inputs.entry1}`);
-    log(`Entry 2: ${inputs.entry2}`);
-    log(`Entry 3: ${inputs.entry3}`);
-    log(`Take Profit: ${inputs.takeProfit}`);
-    log(`Stop Loss: ${inputs.stopLoss}`);
-    log(`Leverage: ${inputs.leverage}x`);
+    // Display results
+    log('\n───────────────────────────────────────');
+    log('✅ CALCULATED QUANTITIES');
+    log('───────────────────────────────────────');
+    log(`Entry 1 Quantity: ${quantities.qty1}`);
+    log(`Entry 2 Quantity: ${quantities.qty2}`);
+    log(`Entry 3 Quantity: ${quantities.qty3}`);
+    log(`Total Position: ${quantities.qty1 + quantities.qty2 + quantities.qty3}`);
+    log('───────────────────────────────────────\n');
 
-    log("\n--- Calculated Quantities ---");
-    log(`Entry 1 Qty: ${results.qty1}`);
-    log(`Entry 2 Qty: ${results.qty2}`);
-    log(`Entry 3 Qty: ${results.qty3}`);
-    log(`Total Position Qty: ${results.qty1 + results.qty2 + results.qty3}`);
+    // Create and initialize trade engine with callback
+    engine = createTradeEngine(config, quantities, stepSize, minQty, tickSize, onEntry1Filled, onEntry2Filled, onEntry3Filled);
+    await engine.initialize();
 
-    // Create trade engine
-    const engine = createTradeEngine(inputs, results);
+    // Keep the process alive to listen for websocket events
+    log('🔌 Listening for order fills... (Press Ctrl+C to exit)\n');
+    await new Promise(() => {}); // Never resolves - keeps process alive
 
-    // Initialize limit orders before starting the price feed
-    log("Initializing limit orders...");
-    await engine.initializeOrders();
-
-    // Start price feed
-    log("Starting price feed...");
-    priceInterval = startPriceFeed(inputs.symbol, engine.onPrice);
-
-    log("Trading bot initialized successfully");
-    log("Waiting for price levels...");
   } catch (err) {
-    error("Failed to initialize trading bot:", err.message);
-    isRunning = false;
+    error('Fatal error:', err.message);
+    if (engine) engine.stop();
     process.exit(1);
   }
 }
+
+main();
 
 /**
  * Graceful shutdown
  */
-function shutdown(signal) {
-  return async () => {
-    log(`\nReceived ${signal}, shutting down gracefully...`);
-
-    if (priceInterval) {
-      clearInterval(priceInterval);
-      log("Stopped price feed");
-    }
-
-    isRunning = false;
-    log("Trading bot shut down successfully");
-    process.exit(0);
-  };
-}
-
-/**
- * Setup process event handlers
- */
-function setupProcessHandlers() {
-  // Handle signals
-  process.on("SIGINT", shutdown("SIGINT"));
-  process.on("SIGTERM", shutdown("SIGTERM"));
-
-  // Handle uncaught exceptions
-  process.on("uncaughtException", (err) => {
-    error("Uncaught exception:", err);
-    process.exit(1);
-  });
-
-  // Handle unhandled promise rejections
-  process.on("unhandledRejection", (reason, promise) => {
-    error("Unhandled rejection at:", promise, "reason:", reason);
-    process.exit(1);
-  });
-}
-
-/**
- * Start the application
- */
-export async function start() {
-  setupProcessHandlers();
-  
-  try {
-    await runPositionSizing();
-  } catch (err) {
-    error("Fatal error:", err.message);
-    process.exit(1);
+process.on('SIGINT', () => {
+  log('\n\nShutting down gracefully...');
+  if (engine) {
+    engine.stop();
   }
-}
-
-export default { start };
+  process.exit(0);
+});

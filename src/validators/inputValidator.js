@@ -1,32 +1,64 @@
 /**
- * Input validation module
- * Validates trading parameters
+ * Input Validator - Validates trading configuration
  */
 
-function validateInputs(inputs) {
-  const errors = [];
+import { error, log } from "../utils/logger.js";
 
-  if (!inputs.amount || inputs.amount <= 0)
-    errors.push("amount must be positive");
-  if (!inputs.entry1 || inputs.entry1 <= 0)
-    errors.push("entry1 must be positive");
-  if (!inputs.takeProfit || inputs.takeProfit <= 0)
-    errors.push("takeProfit must be positive");
-  if (!inputs.stopLoss || inputs.stopLoss <= 0)
-    errors.push("stopLoss must be positive");
-  if (!inputs.leverage || inputs.leverage <= 0)
-    errors.push("leverage must be positive");
-  if (!inputs.entry2 || inputs.entry2 <= 0)
-    errors.push("entry2 must be positive");
-  if (!inputs.entry3 || inputs.entry3 <= 0)
-    errors.push("entry3 must be positive");
-  if (!["LONG", "SHORT"].includes(inputs.side))
-    errors.push("side must be LONG or SHORT");
-  if (!inputs.symbol || typeof inputs.symbol !== "string")
-    errors.push("symbol is required");
+/**
+ * Validate trading configuration before execution
+ */
+function validateInputs(config) {
+  try {
+    const required = ['symbol', 'amount', 'entry1', 'entry2', 'entry3', 'takeProfit', 'stopLoss', 'leverage', 'side'];
+    
+    for (const field of required) {
+      if (config[field] === undefined || config[field] === null) {
+        throw new Error(`Missing required field: ${field}`);
+      }
+    }
 
-  if (errors.length > 0) {
-    throw new Error("Validation errors: " + errors.join(", "));
+    // Validate numbers
+    if (config.amount <= 0) throw new Error('amount must be > 0');
+    if (config.leverage <= 0) throw new Error('leverage must be > 0');
+    
+    // Validate entry prices
+    if (config.entry1 <= 0 || config.entry2 <= 0 || config.entry3 <= 0) {
+      throw new Error('Entry prices must be > 0');
+    }
+
+    // Validate side
+    if (!['LONG', 'SHORT'].includes(config.side)) {
+      throw new Error('side must be LONG or SHORT');
+    }
+
+    // For LONG: entry1 > entry2 > entry3 < takeProfit, entry1 > stopLoss
+    if (config.side === 'LONG') {
+      if (!(config.entry1 > config.entry2 && config.entry2 > config.entry3)) {
+        throw new Error('For LONG: entry1 > entry2 > entry3');
+      }
+      if (!(config.takeProfit > config.entry1)) {
+        throw new Error('For LONG: takeProfit > entry1');
+      }
+      if (!(config.entry1 > config.stopLoss)) {
+        throw new Error('For LONG: entry1 > stopLoss');
+      }
+    } else if (config.side === 'SHORT') {
+      if (!(config.entry1 < config.entry2 && config.entry2 < config.entry3)) {
+        throw new Error('For SHORT: entry1 < entry2 < entry3');
+      }
+      if (!(config.takeProfit < config.entry1)) {
+        throw new Error('For SHORT: takeProfit < entry1');
+      }
+      if (!(config.entry1 < config.stopLoss)) {
+        throw new Error('For SHORT: entry1 < stopLoss');
+      }
+    }
+
+    log('✅ Input validation passed');
+    return true;
+  } catch (err) {
+    error('❌ Input validation failed:', err.message);
+    throw err;
   }
 }
 

@@ -117,8 +117,11 @@ async function getStepSizeAndMinQty(symbol) {
 
   try {
     const info = await client.futuresExchangeInfo();
+   
+
 
     const symbolInfo = info.symbols.find((s) => s.symbol === symbol);
+
     if (!symbolInfo) {
       throw new Error(`Symbol not found: ${symbol}`);
     }
@@ -134,6 +137,7 @@ async function getStepSizeAndMinQty(symbol) {
     return {
       stepSize: Number(lotSizeFilter.stepSize),
       minQty: Number(lotSizeFilter.minQty),
+      tickSize: Number(symbolInfo.filters.find(f => f.filterType === "PRICE_FILTER").tickSize)
     };
   } catch (err) {
     error(`Failed to get symbol info for ${symbol}:`, err.message);

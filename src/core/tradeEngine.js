@@ -1,308 +1,400 @@
-import placeBinanceOrder, { cancelOrder, isOrderFilled } from "../services/orderService.js";
+/**
+ * Trade Engine - Manages order placement and cascade logic
+ */
+
+import client from "../services/binanceClient.js";
+import startOrderEventListener from "../services/orderEventService.js";
 import { log, error, debug } from "../utils/logger.js";
 
 /**
- * Creates a trading engine that manages position sizing and order execution
- * based on price levels (Entry 1, Entry 2, Entry 3, TP, SL)
+ * Creates a trade engine that places and manages orders
  */
-function createTradeEngine(inputs, quantities) {
-  const {
-    entry1,
-    entry2,
-    entry3,
-    takeProfit,
-    stopLoss,
-    side,
-    symbol,
-  } = inputs;
+function createTradeEngine(config, quantities, stepSize, minQty, tickSize, onEntry1Filled, onEntry2Filled, onEntry3Filled) {
+  const { symbol, side, entry1, entry2, entry3, takeProfit, stopLoss } = config;
+  let { qty1, qty2, qty3 } = quantities;
 
-  const { qty1, qty2, qty3 } = quantities;
+  console.log(tickSize,stepSize,'tick and step');
+  // Calculate decimal precision from tickSize (e.g., 0.01 -> 2)
+  const qtyPrecision = Math.max(0, Math.round(-Math.log10(stepSize)));
+  const pricePrecision = Math.max(0, Math.round(-Math.log10(tickSize)));
+
+  // Apply precision to quantities
+  qty1 = applyPrecision(qty1, stepSize, minQty);
+  qty2 = applyPrecision(qty2, stepSize, minQty);
+  qty3 = applyPrecision(qty3, stepSize, minQty);
+
+  log(`\n--- Applying Precision ---`);
+  log(`Step Size: ${stepSize}`);
+  log(`Min Qty: ${minQty}`);
+  log(`Entry 1 (after precision): ${qty1}`);
+  log(`Entry 2 (after precision): ${qty2}`);
+  log(`Entry 3 (after precision): ${qty3}\n`);
+
+  /**
+   * Apply step size precision - round down to nearest step size
+   */
+  function applyPrecision(quantity, step, minimum) {
+    const precision = Math.max(0, Math.round(-Math.log10(step)));
+    // Add a tiny epsilon to handle floating point precision errors during division
+    let rounded = Math.floor((quantity + 0.0000000001) / step) * step;
+    if (rounded < minimum) {
+      rounded = minimum;
+    }
+    return parseFloat(rounded.toFixed(precision));
+  }
+
+  /**
+   * Format price to appropriate decimal places
+   */
+  function formatPrice(price) {
+    return price.toFixed(pricePrecision);
+  }
 
   let state = {
-    level: 0, // 0 = none, 1 = E1, 2 = E2, 3 = E3
-    positionQty: 0,
-    done: false,
-    activeOrders: {
-      entry1: null,
-      entry2: null,
-      entry3: null,
-      takeProfit: null,
-      stopLoss: null,
-    },
-    pendingFills: {
-      entry1: false,
-      entry2: false,
-      entry3: false,
-    },
-    triggered: {
-      entry1: false,
-      entry2: false,
-      entry3: false,
-    },
-    orderPlacementAttempted: {
-      entry2: false,
-      entry3: false,
-      stopLoss: false,
-      takeProfit: false,
-    },
+    entry1OrderId: null,
+    entry1Filled: false,
+    entry2Filled: false, // New state variable to track Entry 2 fill status
+    entry3Filled: false,
+    entry2OrderId: null,
+    entry3OrderId: null,
+    takeProfitOrderId: null,
+    stopLossOrderId: null,
   };
 
+  let eventListenerCleanup = null;
+  let pollingTimer = null;
+
   /**
-   * Validates inputs before processing
+   * Handle order fill events from websocket
    */
-  function validateInputs() {
-    if (!symbol) throw new Error("Symbol is required");
-    if (!["LONG", "SHORT"].includes(side))
-      throw new Error("Side must be LONG or SHORT");
-    if (qty1 <= 0 || qty2 <= 0 || qty3 <= 0)
-      throw new Error("Quantities must be positive");
+  function handleOrderUpdate(orderUpdate) {
+    const { orderId, status, symbol: orderSymbol, executedQty, quantity } = orderUpdate;
+
+    // Check if this is Entry 1 order
+    // Use string coercion for ID comparison as types can vary between REST and WS
+    if (String(orderId) === String(state.entry1OrderId)) {
+      debug(`[Engine] Match found for Entry 1. Status: ${status}`);
+
+      // Check if Entry 1 is fully filled
+      if (status === 'FILLED') {
+        state.entry1Filled = true;
+        log(`\n🎯 ENTRY 1 FULLY FILLED! (${executedQty} units)\n`);
+
+        // Call the callback to notify app that Entry 1 is filled
+        if (typeof onEntry1Filled === 'function') {
+          onEntry1Filled(orderUpdate);
+        }
+      }
+    }
+    // Check if this is Entry 2 order
+    else if (String(orderId) === String(state.entry2OrderId)) {
+      debug(`[Engine] Match found for Entry 2. Status: ${status}`);
+
+      // Check if Entry 2 is fully filled
+      if (status === 'FILLED') {
+        state.entry2Filled = true;
+        log(`\n🎯 ENTRY 2 FULLY FILLED! (${executedQty} units)\n`);
+
+        // Call the callback to notify app that Entry 2 is filled
+        if (typeof onEntry2Filled === 'function') {
+          onEntry2Filled(orderUpdate);
+        }
+      }
+    }
+    // Check if this is Entry 3 order
+    else if (String(orderId) === String(state.entry3OrderId)) {
+      debug(`[Engine] Match found for Entry 3. Status: ${status}`);
+
+      if (status === 'FILLED') {
+        state.entry3Filled = true;
+        log(`\n🎯 ENTRY 3 FULLY FILLED! (${executedQty} units)\n`);
+
+        if (typeof onEntry3Filled === 'function') {
+          onEntry3Filled(orderUpdate);
+        }
+      }
+    }
   }
 
-  async function placeOrderWrapper(action, qty, price = null, tag = null) {
-    if (qty <= 0) {
-      error("Invalid quantity for order:", qty);
-      return null;
-    }
+  /**
+   * Polling fallback - manually check order status if WS fails
+   */
+  async function startPolling() {
+    if (pollingTimer) return;
 
-    try {
-      const order = await placeBinanceOrder(action, qty, symbol, side, price);
-      if (tag && order?.orderId) {
-        state.activeOrders[tag] = { orderId: order.orderId, price: price };
+    log('[Engine] Starting polling safety net...');
+    pollingTimer = setInterval(async () => {
+      // Identify all entry orders that are active but not yet filled
+      const activeEntries = [
+        { id: state.entry1OrderId, filled: state.entry1Filled, tag: 'Entry 1' },
+        { id: state.entry2OrderId, filled: state.entry2Filled, tag: 'Entry 2' },
+        { id: state.entry3OrderId, filled: state.entry3Filled, tag: 'Entry 3' }
+      ].filter(order => order.id && !order.filled);
+
+      if (activeEntries.length === 0) return;
+
+      for (const target of activeEntries) {
+        try {
+          const order = await client.futuresGetOrder({
+            symbol,
+            orderId: target.id
+          });
+
+          if (order.status === 'FILLED') {
+            debug(`[Polling] ${target.tag} fill detected via REST API`);
+            handleOrderUpdate({
+              orderId: order.orderId,
+              status: order.status,
+              symbol: order.symbol,
+              executedQty: parseFloat(order.executedQty),
+              price: parseFloat(order.avgPrice || order.price),
+              quantity: parseFloat(order.origQty),
+              eventTime: order.updateTime
+            });
+          }
+        } catch (err) {
+          error(`[Polling] Error fetching ${target.tag} status:`, err.message);
+        }
       }
+    }, 5000); // Check every 5 seconds
+  }
+
+  function stopPolling() {
+    if (pollingTimer) {
+      clearInterval(pollingTimer);
+      pollingTimer = null;
+      debug('[Engine] Polling stopped');
+      }
+  }
+
+  /**
+   * Place a limit order on Binance Futures
+   */
+  async function placeLimitOrder(quantity, price, tag) {
+    try {
+     
+      const formattedQty = quantity.toFixed(qtyPrecision);
+      
+      const formattedPrice = formatPrice(price);
+       console.log(quantity, price,formattedPrice,'placeeee');
+      
+      log(`📤 Placing ${tag} order: ${side} ${formattedQty} ${symbol} @ ${formattedPrice}`);
+
+      const order = await client.futuresOrder({
+        symbol,
+        side: side === 'LONG' ? 'BUY' : 'SELL',
+        type: 'LIMIT',
+        quantity: formattedQty,
+        price: formattedPrice,
+        timeInForce: 'GTC', // Good Till Cancelled
+      });
+
+      log(`✅ ${tag} order placed - ID: ${order.orderId}`);
       return order;
     } catch (err) {
-      error("Failed to place order:", err.message);
-      return null;
-    }
-  }
-
-  async function cancelOrderByTag(tag) {
-    const orderInfo = state.activeOrders[tag];
-    if (!orderInfo || !orderInfo.orderId) return null;
-
-    try {
-      return await cancelOrder(symbol, orderInfo.orderId);
-    } catch (err) {
-      error(`Failed to cancel ${tag} order:`, err.message);
-      return null;
-    } finally {
-      state.activeOrders[tag] = null;
-    }
-  }
-
-  async function cancelOrders(tags) {
-    await Promise.all(tags.map((tag) => cancelOrderByTag(tag)));
-  }
-
-  async function cancelEntryOrders() {
-    await cancelOrders(["entry1", "entry2", "entry3"]);
-  }
-
-  async function cancelProtectiveOrders(excludeTag = null) {
-    const tags = ["takeProfit", "stopLoss"].filter((tag) => tag !== excludeTag);
-    await cancelOrders(tags);
-  }
-
-  async function checkPendingFills() {
-    try {
-      // Determine order side (BUY for LONG, SELL for SHORT)
-      const orderSide = side === "LONG" ? "BUY" : "SELL";
-
-      // Check Entry 1 fill
-      if (state.pendingFills.entry1 && state.activeOrders.entry1) {
-        const orderInfo = state.activeOrders.entry1;
-        if (await isOrderFilled(symbol, orderInfo.orderId, orderSide, qty1, orderInfo.price)) {
-          log(`Entry 1 order filled - Qty: ${qty1}`);
-          state.level = 1;
-          state.positionQty = qty1;
-          state.activeOrders.entry1 = null;
-          state.pendingFills.entry1 = false;
-
-          // Now place Entry 2, SL, and TP (only if not already attempted)
-          if (!state.orderPlacementAttempted.entry2) {
-            state.orderPlacementAttempted.entry2 = true;
-            await placeOrderWrapper("OPEN", qty2, entry2, "entry2");
-          }
-          if (!state.orderPlacementAttempted.stopLoss) {
-            state.orderPlacementAttempted.stopLoss = true;
-            await placeOrderWrapper("CLOSE", state.positionQty, stopLoss, "stopLoss");
-          }
-          if (!state.orderPlacementAttempted.takeProfit) {
-            state.orderPlacementAttempted.takeProfit = true;
-            await placeOrderWrapper("CLOSE", state.positionQty, takeProfit, "takeProfit");
-          }
-        }
-      }
-
-      // Check Entry 2 fill
-      if (state.pendingFills.entry2 && state.activeOrders.entry2) {
-        const orderInfo = state.activeOrders.entry2;
-        if (await isOrderFilled(symbol, orderInfo.orderId, orderSide, qty2, orderInfo.price)) {
-          log(`Entry 2 order filled - Qty: ${qty2}`);
-          state.level = 2;
-          state.positionQty += qty2;
-          state.activeOrders.entry2 = null;
-          state.pendingFills.entry2 = false;
-
-          // Now place Entry 3, and update SL/TP (only if not already attempted)
-          if (!state.orderPlacementAttempted.entry3) {
-            state.orderPlacementAttempted.entry3 = true;
-            await placeOrderWrapper("OPEN", qty3, entry3, "entry3");
-          }
-          // Reset SL/TP attempted flags for new orders
-          state.orderPlacementAttempted.stopLoss = false;
-          state.orderPlacementAttempted.takeProfit = false;
-          await cancelProtectiveOrders();
-          if (!state.orderPlacementAttempted.stopLoss) {
-            state.orderPlacementAttempted.stopLoss = true;
-            await placeOrderWrapper("CLOSE", state.positionQty, stopLoss, "stopLoss");
-          }
-          if (!state.orderPlacementAttempted.takeProfit) {
-            state.orderPlacementAttempted.takeProfit = true;
-            await placeOrderWrapper("CLOSE", state.positionQty, entry1, "takeProfit");
-          }
-        }
-      }
-
-      // Check Entry 3 fill
-      if (state.pendingFills.entry3 && state.activeOrders.entry3) {
-        const orderInfo = state.activeOrders.entry3;
-        if (await isOrderFilled(symbol, orderInfo.orderId, orderSide, qty3, orderInfo.price)) {
-          log(`Entry 3 order filled - Qty: ${qty3}`);
-          state.level = 3;
-          state.positionQty += qty3;
-          state.activeOrders.entry3 = null;
-          state.pendingFills.entry3 = false;
-
-          // Update SL/TP (only if not already attempted)
-          // Reset SL/TP attempted flags for final orders
-          state.orderPlacementAttempted.stopLoss = false;
-          state.orderPlacementAttempted.takeProfit = false;
-          await cancelProtectiveOrders();
-          if (!state.orderPlacementAttempted.stopLoss) {
-            state.orderPlacementAttempted.stopLoss = true;
-            await placeOrderWrapper("CLOSE", state.positionQty, stopLoss, "stopLoss");
-          }
-          if (!state.orderPlacementAttempted.takeProfit) {
-            state.orderPlacementAttempted.takeProfit = true;
-            await placeOrderWrapper("CLOSE", state.positionQty, entry2, "takeProfit");
-          }
-        }
-      }
-    } catch (err) {
-      error("Error checking pending fills:", err.message);
-    }
-  }
-
-  async function initializeOrders() {
-    log(`Initializing limit orders for ${symbol}`);
-
-    await placeOrderWrapper("OPEN", qty1, entry1, "entry1");
-    // Protective orders will be placed after entry1 is triggered
-  }
-
-  async function onPrice(price) {
-    try {
-      if (state.done) return;
-
-      debug(
-        `[${symbol}] LTP: ${price}, Level: ${state.level}, Position Qty: ${state.positionQty}`
-      );
-
-      // Check for pending order fills and place subsequent orders
-      await checkPendingFills();
-
-      // ---------- STOP LOSS ----------
-      if (
-        (side === "LONG" && price <= stopLoss) ||
-        (side === "SHORT" && price >= stopLoss)
-      ) {
-        log(`STOP LOSS HIT at ${price}`);
-        state.done = true;
-        await cancelEntryOrders();
-        await cancelProtectiveOrders("stopLoss");
-        return;
-      }
-
-      // ---------- TAKE PROFIT ----------
-      if (
-        (side === "LONG" && price >= takeProfit) ||
-        (side === "SHORT" && price <= takeProfit)
-      ) {
-        log(`TAKE PROFIT HIT at ${price}`);
-        state.done = true;
-        await cancelEntryOrders();
-        await cancelProtectiveOrders("takeProfit");
-        return;
-      }
-
-      // ---------- ENTRY 1 ----------
-      if (state.level === 0) {
-        if (
-          (side === "LONG" && price <= entry1) ||
-          (side === "SHORT" && price >= entry1)
-        ) {
-          if (!state.triggered.entry1) {
-            log(`ENTRY 1 triggered at ${price} - Qty: ${qty1}`);
-            state.triggered.entry1 = true;
-            // The order was already placed in initializeOrders, now mark as pending fill
-            state.pendingFills.entry1 = true;
-          }
-        }
-        return;
-      }
-
-      // ---------- ENTRY 2 ----------
-      if (state.level === 1) {
-        if (
-          (side === "LONG" && price <= entry2) ||
-          (side === "SHORT" && price >= entry2)
-        ) {
-          if (!state.triggered.entry2) {
-            log(`ENTRY 2 triggered at ${price} - Qty: ${qty2}`);
-            state.triggered.entry2 = true;
-            // The order was already placed when entry1 filled, now mark as pending fill
-            state.pendingFills.entry2 = true;
-          }
-        }
-        return;
-      }
-
-      // ---------- ENTRY 3 ----------
-      if (state.level === 2) {
-        if (
-          (side === "LONG" && price <= entry3) ||
-          (side === "SHORT" && price >= entry3)
-        ) {
-          if (!state.triggered.entry3) {
-            log(`ENTRY 3 triggered at ${price} - Qty: ${qty3}`);
-            state.triggered.entry3 = true;
-            // The order was already placed when entry2 filled, now mark as pending fill
-            state.pendingFills.entry3 = true;
-          }
-        }
-      }
-    } catch (err) {
-      error("Error in onPrice handler:", err.message);
+      error(`Failed to place ${tag} order:`, err.message);
+      throw err;
     }
   }
 
   /**
-   * Get current trading state (useful for monitoring)
+   * Place Entry 1 limit order at entry1 price
+   */
+  async function placeEntry1() {
+    try {
+      log('\n--- Placing Entry 1 Order ---');
+      const order = await placeLimitOrder(qty1, entry1, 'Entry1');
+      state.entry1OrderId = order.orderId;
+      
+      // Start polling as a safety net
+      startPolling();
+      
+      log(`Entry 1 order active. Order ID: ${state.entry1OrderId}\n`);
+      return order;
+    } catch (err) {
+      error('Failed to place Entry 1:', err.message);
+      throw err;
+    }
+  }
+
+  /**
+   * Place Entry 2 limit order
+   */
+  async function placeEntry2() {
+    try {
+      const order = await placeLimitOrder(qty2, entry2, 'Entry2');
+      state.entry2OrderId = order.orderId;
+      startPolling(); // Ensure polling monitors Entry 2
+      return order;
+    } catch (err) {
+      error('Failed to place Entry 2:', err.message);
+      throw err;
+    }
+  }
+
+  /**
+   * Place Entry 3 limit order
+   */
+  async function placeEntry3() {
+    try {
+      const order = await placeLimitOrder(qty3, entry3, 'Entry3');
+      state.entry3OrderId = order.orderId;
+      startPolling(); // Ensure polling monitors Entry 3
+      return order;
+    } catch (err) {
+      error('Failed to place Entry 3:', err.message);
+      throw err;
+    }
+  }
+
+  /**
+   * Cancel an active order
+   */
+  async function cancelOrder(orderId, tag = 'Order') {
+    try {
+      log(`🚫 Cancelling ${tag} (ID: ${orderId})...`);
+      await client.futuresCancelOrder({ symbol, orderId });
+      log(`✅ ${tag} cancelled.`);
+    } catch (err) {
+      // Don't throw if order already filled or cancelled
+      debug(`Cancel ${tag} failed (might be already filled): ${err.message}`);
+    }
+  }
+
+  /**
+   * Place a Take Profit limit order for the current position
+   * @param {number} quantity - The quantity to close
+   * @param {number} price - Optional price, defaults to config takeProfit
+   */
+  async function placeTakeProfit(quantity, price) {
+    try {
+      const tpSide = side === 'LONG' ? 'SELL' : 'BUY';
+      const formattedQty = quantity.toFixed(qtyPrecision);
+      const targetPrice = price || takeProfit;
+      const formattedPrice = formatPrice(targetPrice);
+
+      log(`📤 Placing Take Profit order: ${tpSide} ${formattedQty} ${symbol} @ ${formattedPrice}`);
+
+      const order = await client.futuresOrder({
+        symbol,
+        side: tpSide,
+        type: 'LIMIT',
+        quantity: formattedQty,
+        price: formattedPrice,
+        timeInForce: 'GTC',
+        reduceOnly: true, // Ensures this only closes existing position
+      });
+
+      log(`✅ Take Profit order placed - ID: ${order.orderId}`);
+      state.takeProfitOrderId = order.orderId;
+      return order;
+    } catch (err) {
+      error('Failed to place Take Profit order:', err.message);
+      throw err;
+    }
+  }
+
+  /**
+   * Place a Stop Loss market order for the current position
+   * @param {number} quantity - The quantity to close
+   */
+  async function placeStopLoss(quantity) {
+    try {
+      const slSide = side === 'LONG' ? 'SELL' : 'BUY';
+      const formattedQty = quantity.toFixed(qtyPrecision);
+      const formattedPrice = formatPrice(stopLoss);
+
+      log(`📤 Placing Stop Loss order: ${slSide} ${formattedQty} ${symbol} @ ${formattedPrice}`);
+
+      const order = await client.futuresOrder({
+        symbol,
+        side: slSide,
+        type: 'STOP_MARKET',
+        stopPrice: formattedPrice,
+        quantity: formattedQty,
+        reduceOnly: true,
+      });
+
+      log(`✅ Stop Loss order placed - ID: ${order.orderId}`);
+      state.stopLossOrderId = order.orderId;
+      return order;
+    } catch (err) {
+      error('Failed to place Stop Loss order:', err.message);
+      throw err;
+    }
+  }
+
+  /**
+   * Initialize trade engine - start listener and place first order
+   */
+  async function initialize() {
+    try {
+      log('\n═══════════════════════════════════════');
+      log('    Initializing Trade Engine');
+      log('═══════════════════════════════════════\n');
+
+      // Check connectivity and API keys
+      log('Verifying Binance connectivity...');
+      const serverTime = await client.time();
+      log(`✅ Connected to Binance (Server Time: ${new Date(serverTime).toLocaleTimeString()})`);
+
+      // Set leverage
+      await client.futuresLeverage({
+        symbol,
+        leverage: config.leverage,
+      });
+      log(`✅ Leverage set to ${config.leverage}x\n`);
+
+      // Start order event listener BEFORE placing orders
+      log('Starting order event listener...');
+      eventListenerCleanup = await startOrderEventListener(handleOrderUpdate);
+
+      // Place Entry 1 order
+      await placeEntry1();
+
+      log('═══════════════════════════════════════');
+      log('✅ Trade Engine Ready - Waiting for Entry 1 fill');
+      log('═══════════════════════════════════════\n');
+
+    } catch (err) {
+      error('Trade engine initialization failed:', err.message);
+      throw err;
+    }
+  }
+
+  /**
+   * Cleanup - stop listening to events
+   */
+  function stop() {
+    if (eventListenerCleanup) {
+      eventListenerCleanup();
+      log('\n[WS] Order event listener stopped');
+    }
+    stopPolling();
+  }
+
+  /**
+   * Get current state
    */
   function getState() {
     return { ...state };
   }
 
-  // Validate on creation
-  try {
-    validateInputs();
-  } catch (err) {
-    error("Trade engine initialization failed:", err.message);
-    throw err;
-  }
-
-  return { onPrice, getState, initializeOrders };
+  return {
+    initialize,
+    stop,
+    getState,
+    placeEntry2,
+    placeEntry3,
+    placeTakeProfit,
+    placeStopLoss,
+    cancelOrder,
+    state,
+    qty1,
+    qty2,
+    qty3,
+  };
 }
+
 
 export default createTradeEngine;

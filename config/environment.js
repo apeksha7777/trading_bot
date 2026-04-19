@@ -50,9 +50,7 @@ function validateConfig() {
   }
 }
 
-// Validate on import (production only)
-if (config.isProd) {
-  validateConfig();
-}
+// Always validate config on startup to prevent silent failures
+validateConfig();
 
 export default config;
