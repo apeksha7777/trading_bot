@@ -9,7 +9,7 @@ import { log, error, debug } from "../utils/logger.js";
 /**
  * Creates a trade engine that places and manages orders
  */
-function createTradeEngine(config, quantities, stepSize, minQty, tickSize, onEntry1Filled, onEntry2Filled, onEntry3Filled) {
+function createTradeEngine(config, quantities, stepSize, minQty, tickSize, onEntry1Filled, onEntry2Filled, onEntry3Filled, onTradeCompleted) {
   const { symbol, side, entry1, entry2, entry3, takeProfit, stopLoss } = config;
   let { qty1, qty2, qty3 } = quantities;
 
@@ -65,6 +65,35 @@ function createTradeEngine(config, quantities, stepSize, minQty, tickSize, onEnt
   let pollingTimer = null;
 
   /**
+   * Cancel all known active orders and stop the bot
+   */
+  async function cleanupAndExit() {
+    log('\n🧹 Cleaning up: Cancelling all pending orders...');
+    const ordersToCancel = [
+      { id: state.entry1OrderId, tag: 'Entry 1' },
+      { id: state.entry2OrderId, tag: 'Entry 2' },
+      { id: state.entry3OrderId, tag: 'Entry 3' },
+      { id: state.takeProfitOrderId, tag: 'Take Profit' },
+      { id: state.stopLossOrderId, tag: 'Stop Loss' }
+    ];
+
+    for (const order of ordersToCancel) {
+      if (order.id) {
+        try {
+          await cancelOrder(order.id, order.tag);
+        } catch (err) {
+          // Silence errors if order is already filled/cancelled
+          debug(`Cleanup: Could not cancel ${order.tag}: ${err.message}`);
+        }
+      }
+    }
+
+    if (typeof onTradeCompleted === 'function') {
+      onTradeCompleted();
+    }
+  }
+
+  /**
    * Handle order fill events from websocket
    */
   function handleOrderUpdate(orderUpdate) {
@@ -114,6 +143,20 @@ function createTradeEngine(config, quantities, stepSize, minQty, tickSize, onEnt
         }
       }
     }
+    // Check for Take Profit
+    else if (String(orderId) === String(state.takeProfitOrderId)) {
+      if (status === 'FILLED') {
+        log('💰 TAKE PROFIT FILLED - Trade successful!');
+        cleanupAndExit();
+      }
+    }
+    // Check for Stop Loss
+    else if (String(orderId) === String(state.stopLossOrderId)) {
+      if (status === 'FILLED') {
+        log('📉 STOP LOSS FILLED - Risk managed.');
+        cleanupAndExit();
+      }
+    }
   }
 
   /**
@@ -125,15 +168,17 @@ function createTradeEngine(config, quantities, stepSize, minQty, tickSize, onEnt
     log('[Engine] Starting polling safety net...');
     pollingTimer = setInterval(async () => {
       // Identify all entry orders that are active but not yet filled
-      const activeEntries = [
+      const monitoredOrders = [
         { id: state.entry1OrderId, filled: state.entry1Filled, tag: 'Entry 1' },
         { id: state.entry2OrderId, filled: state.entry2Filled, tag: 'Entry 2' },
-        { id: state.entry3OrderId, filled: state.entry3Filled, tag: 'Entry 3' }
+        { id: state.entry3OrderId, filled: state.entry3Filled, tag: 'Entry 3' },
+        { id: state.takeProfitOrderId, tag: 'Take Profit' },
+        { id: state.stopLossOrderId, tag: 'Stop Loss' }
       ].filter(order => order.id && !order.filled);
 
-      if (activeEntries.length === 0) return;
+      if (monitoredOrders.length === 0) return;
 
-      for (const target of activeEntries) {
+      for (const target of monitoredOrders) {
         try {
           const order = await client.futuresGetOrder({
             symbol,

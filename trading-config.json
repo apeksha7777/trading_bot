@@ -1,11 +1,11 @@
 {
-  "symbol": "ADAUSDT",
+  "symbol": "AVAXUSDT",
   "amount": 100,
-  "entry1":0.2450,
-  "entry2": 0.2454,
-  "entry3": 0.2458,
-  "takeProfit": 0.2439,
-  "stopLoss": 0.2462,
+  "entry1":9.328,
+  "entry2": 10,
+  "entry3": 11,
+  "takeProfit": 9.325,
+  "stopLoss": 12,
   "leverage": 15,
   "side": "SHORT"
 }

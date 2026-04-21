@@ -111,6 +111,15 @@ async function onEntry3Filled(orderUpdate) {
 }
 
 /**
+ * Callback when trade is finished (TP or SL filled)
+ */
+function onTradeCompleted() {
+  log('\n🏁 Trade cycle completed. Shutting down bot...');
+  if (engine) engine.stop();
+  process.exit(0);
+}
+
+/**
  * Main execution
  */
 async function main() {
@@ -170,7 +179,17 @@ async function main() {
     log('───────────────────────────────────────\n');
 
     // Create and initialize trade engine with callback
-    engine = createTradeEngine(config, quantities, stepSize, minQty, tickSize, onEntry1Filled, onEntry2Filled, onEntry3Filled);
+    engine = createTradeEngine(
+      config, 
+      quantities, 
+      stepSize, 
+      minQty, 
+      tickSize, 
+      onEntry1Filled, 
+      onEntry2Filled, 
+      onEntry3Filled,
+      onTradeCompleted
+    );
     await engine.initialize();
 
     // Keep the process alive to listen for websocket events

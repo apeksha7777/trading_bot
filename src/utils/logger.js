@@ -1,23 +1,64 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import util from 'util';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const logDir = path.join(__dirname, '../../logs');
+const logFile = path.join(logDir, 'bot.log');
+
+// Ensure log directory exists
+if (!fs.existsSync(logDir)) {
+  fs.mkdirSync(logDir, { recursive: true });
+}
+
 /**
- * Logger utility for consistent output formatting
+ * Create a write stream with the 'w' flag. 
+ * This ensures the log file is refreshed (cleared) on every program start.
  */
+const logStream = fs.createWriteStream(logFile, { flags: 'w' });
 
-function log(message) {
-  console.log(`[${new Date().toISOString()}] [INFO] ${message}`);
-}
+/**
+ * Internal helper to format arguments and write them to the log file.
+ */
+const writeToFile = (level, args) => {
+  const timestamp = new Date().toISOString();
+  const message = util.format(...args);
+  logStream.write(`[${timestamp}] [${level}] ${message}\n`);
+};
 
-function error(message, details = '') {
-  console.error(`[${new Date().toISOString()}] [ERROR] ${message}`, details);
-}
+// Store references to original console methods
+const originalLog = console.log;
+const originalError = console.error;
+const originalDebug = console.debug;
 
-function debug(message) {
+/**
+ * Override global console methods.
+ * This ensures that even raw console.log() calls from anywhere in the app 
+ * are captured in the bot.log file.
+ */
+console.log = (...args) => {
+  originalLog(...args);
+  writeToFile('INFO', args);
+};
+
+console.error = (...args) => {
+  originalError(...args);
+  writeToFile('ERROR', args);
+};
+
+console.debug = (...args) => {
+  // Show in console only if DEBUG env is enabled, but always record to the log file.
   if (process.env.DEBUG === 'true') {
-    console.log(`[${new Date().toISOString()}] [DEBUG] ${message}`);
+    originalDebug(...args);
   }
-}
+  writeToFile('DEBUG', args);
+};
 
-function warn(message) {
-  console.warn(`[${new Date().toISOString()}] [WARN] ${message}`);
-}
-
-export { log, error, debug, warn };
+/**
+ * Export the methods as required by the application's named imports.
+ * These methods now effectively pipe data to both the console and the log file.
+ */
+export const log = console.log;
+export const error = console.error;
+export const debug = console.debug;
