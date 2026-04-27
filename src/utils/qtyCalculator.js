@@ -61,7 +61,7 @@ function calculateTCLQuantities(
     throw new Error("Calculation validation failed: " + errors.join(", "));
   }
 
-  const RISK_PERCENTAGE = 0.1; // 10% risk per trade
+  const RISK_PERCENTAGE = 0.2; // 10% risk per trade
 
   const WEIGHTS = {
     ENTRY: 1,
