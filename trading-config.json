@@ -1,11 +1,11 @@
 {
-  "symbol": "AVAXUSDT",
+  "symbol": "BNBUSDT",
   "amount": 100,
-  "entry1":9.328,
-  "entry2": 10,
-  "entry3": 11,
-  "takeProfit": 9.325,
-  "stopLoss": 12,
+  "entry1": 623.34,
+  "entry2": 623.3,
+  "entry3": 623.25,
+  "takeProfit": 623.4,
+  "stopLoss": 620,
   "leverage": 15,
-  "side": "SHORT"
+  "side": "LONG"
 }

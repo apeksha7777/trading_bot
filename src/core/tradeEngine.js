@@ -59,6 +59,7 @@ function createTradeEngine(config, quantities, stepSize, minQty, tickSize, onEnt
     entry3OrderId: null,
     takeProfitOrderId: null,
     stopLossOrderId: null,
+    stopLossIsAlgo: false,
   };
 
   let eventListenerCleanup = null;
@@ -70,17 +71,17 @@ function createTradeEngine(config, quantities, stepSize, minQty, tickSize, onEnt
   async function cleanupAndExit() {
     log('\n🧹 Cleaning up: Cancelling all pending orders...');
     const ordersToCancel = [
-      { id: state.entry1OrderId, tag: 'Entry 1' },
-      { id: state.entry2OrderId, tag: 'Entry 2' },
-      { id: state.entry3OrderId, tag: 'Entry 3' },
-      { id: state.takeProfitOrderId, tag: 'Take Profit' },
-      { id: state.stopLossOrderId, tag: 'Stop Loss' }
+      { id: state.entry1OrderId, tag: 'Entry 1', isAlgo: false },
+      { id: state.entry2OrderId, tag: 'Entry 2', isAlgo: false },
+      { id: state.entry3OrderId, tag: 'Entry 3', isAlgo: false },
+      { id: state.takeProfitOrderId, tag: 'Take Profit', isAlgo: false },
+      { id: state.stopLossOrderId, tag: 'Stop Loss', isAlgo: state.stopLossIsAlgo }
     ];
 
     for (const order of ordersToCancel) {
       if (order.id) {
         try {
-          await cancelOrder(order.id, order.tag);
+          await cancelOrder(order.id, order.tag, order.isAlgo);
         } catch (err) {
           // Silence errors if order is already filled/cancelled
           debug(`Cleanup: Could not cancel ${order.tag}: ${err.message}`);
@@ -169,17 +170,23 @@ function createTradeEngine(config, quantities, stepSize, minQty, tickSize, onEnt
     pollingTimer = setInterval(async () => {
       // Identify all entry orders that are active but not yet filled
       const monitoredOrders = [
-        { id: state.entry1OrderId, filled: state.entry1Filled, tag: 'Entry 1' },
-        { id: state.entry2OrderId, filled: state.entry2Filled, tag: 'Entry 2' },
-        { id: state.entry3OrderId, filled: state.entry3Filled, tag: 'Entry 3' },
-        { id: state.takeProfitOrderId, tag: 'Take Profit' },
-        { id: state.stopLossOrderId, tag: 'Stop Loss' }
+        { id: state.entry1OrderId, filled: state.entry1Filled, tag: 'Entry 1', isAlgo: false },
+        { id: state.entry2OrderId, filled: state.entry2Filled, tag: 'Entry 2', isAlgo: false },
+        { id: state.entry3OrderId, filled: state.entry3Filled, tag: 'Entry 3', isAlgo: false },
+        { id: state.takeProfitOrderId, tag: 'Take Profit', isAlgo: false },
+        { id: state.stopLossOrderId, tag: 'Stop Loss', isAlgo: state.stopLossIsAlgo }
       ].filter(order => order.id && !order.filled);
 
       if (monitoredOrders.length === 0) return;
 
       for (const target of monitoredOrders) {
         try {
+          if (target.isAlgo) {
+            // For simplicity, skip polling algo orders to avoid 'Order does not exist' API errors
+            // as futuresGetOrder doesn't support them and futuresGetOpenAlgoOrders handles it differently.
+            continue;
+          }
+
           const order = await client.futuresGetOrder({
             symbol,
             orderId: target.id
@@ -295,10 +302,14 @@ function createTradeEngine(config, quantities, stepSize, minQty, tickSize, onEnt
   /**
    * Cancel an active order
    */
-  async function cancelOrder(orderId, tag = 'Order') {
+  async function cancelOrder(orderId, tag = 'Order', isAlgo = false) {
     try {
       log(`🚫 Cancelling ${tag} (ID: ${orderId})...`);
-      await client.futuresCancelOrder({ symbol, orderId });
+      if (isAlgo) {
+        await client.futuresCancelAlgoOrder({ symbol, algoId: orderId });
+      } else {
+        await client.futuresCancelOrder({ symbol, orderId });
+      }
       log(`✅ ${tag} cancelled.`);
     } catch (err) {
       // Don't throw if order already filled or cancelled
@@ -360,8 +371,10 @@ function createTradeEngine(config, quantities, stepSize, minQty, tickSize, onEnt
         reduceOnly: true,
       });
 
-      log(`✅ Stop Loss order placed - ID: ${order.orderId}`);
-      state.stopLossOrderId = order.orderId;
+      const id = order.orderId || order.algoId;
+      log(`✅ Stop Loss order placed - ID: ${id}`);
+      state.stopLossOrderId = id;
+      state.stopLossIsAlgo = !!order.algoId;
       return order;
     } catch (err) {
       error('Failed to place Stop Loss order:', err.message);
