@@ -88,7 +88,35 @@ function createTradeEngine(config, quantities, stepSize, minQty, tickSize, onEnt
         }
       }
     }
+    
+    try {
+    // Check for open positions on the symbol
+    const positions = await client.futuresPositionRisk({ symbol: config.symbol });
+    const position = positions.find(p => p.symbol === config.symbol);
 
+    if (position && Math.abs(parseFloat(position.positionAmt)) > 0) {
+      log(`📊 Open position found: ${position.positionAmt} ${config.symbol}. Closing...`);
+
+      // Determine close side (opposite of position)
+      const closeSide = parseFloat(position.positionAmt) > 0 ? 'SELL' : 'BUY';
+      const closeQty = Math.abs(parseFloat(position.positionAmt));
+
+      // Place market order to close position
+      await client.futuresOrder({
+        symbol: config.symbol,
+        side: closeSide,
+        type: 'MARKET',
+        quantity: closeQty.toString(),
+        reduceOnly: true, // Ensures only closes existing position
+      });
+
+      log(`✅ Position closed: ${closeSide} ${closeQty} ${config.symbol}`);
+    } else {
+      log('✅ No open positions found.');
+    }
+  } catch (err) {
+    error('Failed to check/close positions:', err.message);
+  }
     if (typeof onTradeCompleted === 'function') {
       onTradeCompleted();
     }

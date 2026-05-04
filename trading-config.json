@@ -1,11 +1,11 @@
 {
-  "symbol": "BNBUSDT",
+  "symbol": "TRXUSDT",
   "amount": 100,
-  "entry1": 623.34,
-  "entry2": 623.3,
-  "entry3": 623.25,
-  "takeProfit": 623.4,
-  "stopLoss": 620,
+  "entry1": 0.34160,
+  "entry2": 0.33695,
+  "entry3": 0.33632,
+  "takeProfit": 0.34165,
+  "stopLoss": 0.33566,
   "leverage": 15,
   "side": "LONG"
 }

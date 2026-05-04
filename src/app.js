@@ -113,8 +113,9 @@ async function onEntry3Filled(orderUpdate) {
 /**
  * Callback when trade is finished (TP or SL filled)
  */
-function onTradeCompleted() {
-  log('\n🏁 Trade cycle completed. Shutting down bot...');
+async function onTradeCompleted() {
+  log('\n🏁 Trade cycle completed. Checking for open positions...');
+  log('Shutting down bot...');
   if (engine) engine.stop();
   process.exit(0);
 }
