@@ -1,11 +1,11 @@
 {
-  "symbol": "TRXUSDT",
-  "amount": 100,
-  "entry1": 0.34160,
-  "entry2": 0.33695,
-  "entry3": 0.33632,
-  "takeProfit": 0.34165,
-  "stopLoss": 0.33566,
+  "symbol": "SOLUSDT",
+  "amount": 700,
+  "entry1": 64.95,
+  "entry2": 65.62,
+  "entry3": 66.23,
+  "takeProfit": 63.08,
+  "stopLoss": 66.86,
   "leverage": 15,
-  "side": "LONG"
+  "side": "SHORT"
 }

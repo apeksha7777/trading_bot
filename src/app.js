@@ -9,10 +9,10 @@ import { fileURLToPath } from 'url';
 import { log, error, debug } from './utils/logger.js';
 import { calculateTCLQuantities, getStepSizeAndMinQty } from './utils/qtyCalculator.js';
 import { validateInputs } from './validators/inputValidator.js';
-import createTradeEngine from './core/tradeEngine.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const configPath = path.join(__dirname, '../trading-config.json');
+const isCheckMode = process.argv.includes('--check');
 
 let engine = null;
 let config = null;
@@ -179,7 +179,18 @@ async function main() {
     log(`Total Position: ${quantities.qty1 + quantities.qty2 + quantities.qty3}`);
     log('───────────────────────────────────────\n');
 
+    const qtyUsed = (config.entry1 * quantities.qty1 + config.entry2 * quantities.qty2 + config.entry3 * quantities.qty3)/config.leverage;
+    log(`Total Margin Used: ${qtyUsed.toFixed(2)} USDT`);
+
+    if (isCheckMode) {
+      log('✅ Check mode active. Exiting after quantity calculation.');
+      process.exit(0);
+    }
+
     // Create and initialize trade engine with callback
+    const tradeModule = await import('./core/tradeEngine.js');
+    const createTradeEngine = tradeModule.default;
+
     engine = createTradeEngine(
       config, 
       quantities, 

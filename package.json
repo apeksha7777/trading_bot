@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node bin/app.js",
     "dev": "nodemon bin/app.js",
+    "check": "node src/app.js --check",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
