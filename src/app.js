@@ -181,6 +181,15 @@ async function main() {
 
     const qtyUsed = (config.entry1 * quantities.qty1 + config.entry2 * quantities.qty2 + config.entry3 * quantities.qty3)/config.leverage;
     log(`Total Margin Used: ${qtyUsed.toFixed(2)} USDT`);
+    const loss =Math.abs(config.entry1 * quantities.qty1 + config.entry2 * quantities.qty2 + config.entry3 * quantities.qty3) - (config.stopLoss * (quantities.qty1 + quantities.qty2 + quantities.qty3));
+    log(`Max Loss if Stop Loss Hit: ${loss.toFixed(2)} USDT`);
+    const profit1 = Math.abs(config.entry1 * quantities.qty1 - config.takeProfit * quantities.qty1);
+    log(`Profit from Entry 1 if TP Hit: ${profit1.toFixed(2)} USDT`);
+    const profit2 = Math.abs((config.entry2 * quantities.qty2 + config.entry1 * quantities.qty1) - config.entry1 *( quantities.qty2 + quantities.qty1));
+    log(`Profit from Entry 2 if TP Hit: ${profit2.toFixed(2)} USDT`);
+    const profit3 = Math.abs((config.entry3 * quantities.qty3 + config.entry2 * quantities.qty2 + config.entry1 * quantities.qty1) - config.entry2 *( quantities.qty3 + quantities.qty2 + quantities.qty1));
+    log(`Profit from Entry 3 if TP Hit: ${profit3.toFixed(2)} USDT`);
+     
 
     if (isCheckMode) {
       log('✅ Check mode active. Exiting after quantity calculation.');
