@@ -1,11 +1,11 @@
 {
-  "symbol": "SOLUSDT",
-  "amount": 700,
-  "entry1": 64.95,
-  "entry2": 65.62,
-  "entry3": 66.23,
-  "takeProfit": 63.08,
-  "stopLoss": 66.86,
+  "symbol": "ADAUSDT",
+  "amount": 300,
+  "entry1": 0.1636,
+  "entry2": 0.1620,
+  "entry3": 0.1605,
+  "takeProfit": 0.1681,
+  "stopLoss": 0.1590,
   "leverage": 15,
-  "side": "SHORT"
+  "side": "LONG"
 }

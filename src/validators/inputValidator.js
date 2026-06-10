@@ -54,7 +54,7 @@ function validateInputs(config) {
       }
     }
 
-    log('✅ Input validation passed');
+    // log('✅ Input validation passed');
     return true;
   } catch (err) {
     error('❌ Input validation failed:', err.message);

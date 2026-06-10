@@ -22,10 +22,10 @@ let config = null;
  */
 function loadConfig() {
   try {
-    log('Loading trading configuration...');
+    // log('Loading trading configuration...');
     const configData = fs.readFileSync(configPath, 'utf-8');
     const config = JSON.parse(configData);
-    log(`✅ Config loaded from ${configPath}`);
+    // log(`✅ Config loaded from ${configPath}`);
     return config;
   } catch (err) {
     error('Failed to load trading-config.json:', err.message);
@@ -148,9 +148,9 @@ async function main() {
     log(`Stop Loss: ${config.stopLoss}`);
 
     // Get symbol precision from Binance
-    log('\nFetching symbol precision from Binance...');
+    // log('\nFetching symbol precision from Binance...');
     const { stepSize, minQty, tickSize } = await getStepSizeAndMinQty(config.symbol);
-    console.log(stepSize, minQty, tickSize,'step min and tick');
+    // console.log(stepSize, minQty, tickSize,'step min and tick');
 
 
    
@@ -171,28 +171,37 @@ async function main() {
 
     // Display results
     log('\n───────────────────────────────────────');
-    log('✅ CALCULATED QUANTITIES');
+    log('CALCULATED QUANTITIES');
     log('───────────────────────────────────────');
     log(`Entry 1 Quantity: ${quantities.qty1}`);
     log(`Entry 2 Quantity: ${quantities.qty2}`);
     log(`Entry 3 Quantity: ${quantities.qty3}`);
     log(`Total Position: ${quantities.qty1 + quantities.qty2 + quantities.qty3}`);
-    log('───────────────────────────────────────\n');
+    log('───────────────────────────────────────');
 
     const qtyUsed = (config.entry1 * quantities.qty1 + config.entry2 * quantities.qty2 + config.entry3 * quantities.qty3)/config.leverage;
     log(`Total Margin Used: ${qtyUsed.toFixed(2)} USDT`);
+    log('───────────────────────────────────────');
+
     const loss =Math.abs(config.entry1 * quantities.qty1 + config.entry2 * quantities.qty2 + config.entry3 * quantities.qty3) - (config.stopLoss * (quantities.qty1 + quantities.qty2 + quantities.qty3));
-    log(`Max Loss if Stop Loss Hit: ${loss.toFixed(2)} USDT`);
+    log(`❌ Max Loss if Stop Loss Hit: ${loss.toFixed(2)} USDT`);
+    log('───────────────────────────────────────');
+
     const profit1 = Math.abs(config.entry1 * quantities.qty1 - config.takeProfit * quantities.qty1);
-    log(`Profit from Entry 1 if TP Hit: ${profit1.toFixed(2)} USDT`);
+    log(`✅ Profit from Entry 1 if TP Hit: ${profit1.toFixed(2)} USDT`);
+    log('───────────────────────────────────────');
+
     const profit2 = Math.abs((config.entry2 * quantities.qty2 + config.entry1 * quantities.qty1) - config.entry1 *( quantities.qty2 + quantities.qty1));
-    log(`Profit from Entry 2 if TP Hit: ${profit2.toFixed(2)} USDT`);
+    log(`✅ Profit from Entry 2 to Entry 1: ${profit2.toFixed(2)} USDT`);
+    log('───────────────────────────────────────');
+
     const profit3 = Math.abs((config.entry3 * quantities.qty3 + config.entry2 * quantities.qty2 + config.entry1 * quantities.qty1) - config.entry2 *( quantities.qty3 + quantities.qty2 + quantities.qty1));
-    log(`Profit from Entry 3 if TP Hit: ${profit3.toFixed(2)} USDT`);
+    log(`✅ Profit from Entry 3 to Entry 2: ${profit3.toFixed(2)} USDT`);
+    log('───────────────────────────────────────');
      
 
     if (isCheckMode) {
-      log('✅ Check mode active. Exiting after quantity calculation.');
+      log('Check mode active. Exiting after quantity calculation.');
       process.exit(0);
     }
 
